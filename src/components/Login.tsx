@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { QrCode, Phone, ArrowRight } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
-import { startQrLogin, sendPhoneCode, signInWithPhone } from '../lib/telegram';
+import { startQrLogin, sendPhoneCode, signInWithPhone, checkAuth } from '../lib/telegram';
 
 interface LoginProps {
   onLogin: () => void;
@@ -19,6 +19,7 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
 
   useEffect(() => {
     let isMounted = true;
+    let authInterval: any;
     
     if (loginMethod === 'qr') {
       setLoading(true);
@@ -35,7 +36,8 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
           return window.prompt('Nhập mật khẩu 2FA của bạn:') || '';
         }
       ).then(() => {
-        if (isMounted) onLogin();
+        // Luôn chuyển trạng thái thành công kể cả khi mount/unmount (tránh lỗi Strict Mode)
+        onLogin();
       }).catch(err => {
         console.error("QR Error:", err);
         if (isMounted) {
@@ -43,9 +45,25 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
           setLoading(false);
         }
       });
+
+      // Cơ chế dự phòng (fallback polling): Kiểm tra auth liên tục mỗi 3 giây
+      // Đảm bảo nếu quá trình quét QR thành công nhưng promise bị kẹt hoặc mất event, vẫn tự vào app
+      authInterval = setInterval(async () => {
+         if (!isMounted) return;
+         try {
+           const isAuth = await checkAuth();
+           if (isAuth && isMounted) {
+              clearInterval(authInterval);
+              onLogin();
+           }
+         } catch (e) {}
+      }, 3000);
     }
 
-    return () => { isMounted = false; };
+    return () => { 
+      isMounted = false; 
+      if (authInterval) clearInterval(authInterval);
+    };
   }, [loginMethod, onLogin]);
 
   const handleSendCode = async () => {

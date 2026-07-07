@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Folder, File, Upload, FolderPlus, Download, Trash2, Home, ChevronRight, ChevronLeft, Loader, MoreVertical, Eye, X, FileImage, FileText, FileVideo, FileArchive, LayoutGrid, Image as ImageIcon, CheckSquare, Square, CornerUpRight, AlertTriangle, List as ListIcon, AlignJustify, Grid as GridIcon, Settings2, Search, Play, Moon, Sun, LogOut, Menu } from 'lucide-react';
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
+import heic2any from 'heic2any';
 import { fetchDriveItems, uploadFile, createFolder, deleteItem, downloadFile, downloadThumbnail, moveItemRecursive } from '../lib/vfs';
 import type { DriveItem } from '../lib/vfs';
 const formatBytes = (bytes: number, decimals = 2) => {
@@ -13,13 +14,14 @@ const formatBytes = (bytes: number, decimals = 2) => {
     return `${parseFloat((bytes / Math.pow(k, i)).toFixed(dm))} ${sizes[i]}`;
 };
 
-const isImageItem = (item: DriveItem) => !!(item.mimeType?.startsWith('image/'));
-const isVideoItem = (item: DriveItem) => !!(item.mimeType?.startsWith('video/'));
+const isImageItem = (item: DriveItem) => !!(item.mimeType?.startsWith('image/') || item.name?.toLowerCase().endsWith('.heic'));
+const isVideoItem = (item: DriveItem) => !!(item.mimeType?.startsWith('video/') || item.name?.toLowerCase().endsWith('.mov'));
 
-const getFileIcon = (mimeType?: string, size: number = 36) => {
-  if (!mimeType) return <File size={size} color="var(--text-secondary)" style={{ flexShrink: 0 }} />;
-  if (mimeType.startsWith('image/')) return <FileImage size={size} color="#3b82f6" style={{ flexShrink: 0 }} />;
-  if (mimeType.startsWith('video/')) return <FileVideo size={size} color="#ef4444" style={{ flexShrink: 0 }} />;
+const getFileIcon = (item?: DriveItem, size: number = 36) => {
+  if (!item) return <File size={size} color="var(--text-secondary)" style={{ flexShrink: 0 }} />;
+  if (isImageItem(item)) return <FileImage size={size} color="#3b82f6" style={{ flexShrink: 0 }} />;
+  if (isVideoItem(item)) return <FileVideo size={size} color="#ef4444" style={{ flexShrink: 0 }} />;
+  const mimeType = item.mimeType || '';
   if (mimeType.includes('pdf') || mimeType.includes('word') || mimeType.includes('text')) return <FileText size={size} color="#f59e0b" style={{ flexShrink: 0 }} />;
   if (mimeType.includes('zip') || mimeType.includes('rar')) return <FileArchive size={size} color="#8b5cf6" style={{ flexShrink: 0 }} />;
   return <File size={size} color="var(--text-secondary)" style={{ flexShrink: 0 }} />;
@@ -47,6 +49,7 @@ const Drive: React.FC<DriveProps> = ({ onLogout }) => {
   const [downloadAllProgress, setDownloadAllProgress] = useState({ current: 0, total: 0 });
   const [activeMenu, setActiveMenu] = useState<{ id: number, x: number, y: number } | null>(null);
   const [thumbnails, setThumbnails] = useState<Record<number, string>>({});
+  const [previewError, setPreviewError] = useState('');
 
   type SortField = 'name' | 'date' | 'size';
   type SortDirection = 'asc' | 'desc';
@@ -134,36 +137,42 @@ const Drive: React.FC<DriveProps> = ({ onLogout }) => {
     setUploadQueue({ total: files.length, current: 1 });
     
     try {
+      let errorMessages: string[] = [];
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
         setUploadQueue({ total: files.length, current: i + 1 });
         
-        let targetPath = currentPath;
-        if (file.webkitRelativePath) {
-           const parts = file.webkitRelativePath.split('/');
-           parts.pop();
-           const relativeDir = parts.join('/');
-           if (relativeDir) {
-              targetPath = currentPath === '/' ? `/${relativeDir}` : `${currentPath}/${relativeDir}`;
-           }
+        try {
+            let targetPath = currentPath;
+            if (file.webkitRelativePath) {
+               const parts = file.webkitRelativePath.split('/');
+               parts.pop();
+               const relativeDir = parts.join('/');
+               if (relativeDir) {
+                  targetPath = currentPath === '/' ? `/${relativeDir}` : `${currentPath}/${relativeDir}`;
+               }
+            }
+
+            const existingFile = items.find(item => item.name === file.name && item.path === targetPath && !item.isFolder);
+            if (existingFile) {
+                await deleteItem(existingFile.id);
+                setItems(prev => prev.filter(p => p.id !== existingFile.id));
+            }
+
+            await uploadFile(file, targetPath, (p) => setUploadProgress(p));
+            setUploadProgress(0);
+        } catch (fileErr: any) {
+            console.error(`Lỗi up file ${file.name}:`, fileErr);
+            errorMessages.push(`${file.name}: ${fileErr.message || fileErr}`);
         }
-
-        // Overwrite logic: Xóa file cũ nếu trùng tên và đường dẫn
-        const existingFile = items.find(item => item.name === file.name && item.path === targetPath && !item.isFolder);
-        if (existingFile) {
-            await deleteItem(existingFile.id);
-            setItems(prev => prev.filter(p => p.id !== existingFile.id));
-        }
-
-        let fileToUpload: globalThis.File | Blob = file;
-
-        await uploadFile(fileToUpload as globalThis.File, targetPath, (p) => setUploadProgress(p));
-        setUploadProgress(0);
       }
       await loadItems();
+      if (errorMessages.length > 0) {
+         alert(`Tải lên hoàn tất nhưng có ${errorMessages.length} file bị lỗi:\n` + errorMessages.slice(0,5).join('\n') + (errorMessages.length > 5 ? '\n...' : ''));
+      }
     } catch (err: any) {
-      console.error(err);
-      alert('Tải lên thất bại! Lỗi: ' + String(err.message || err));
+      console.error("Lỗi tổng:", err);
+      alert('Đã xảy ra lỗi nghiêm trọng: ' + String(err.message || err));
     } finally {
       setUploading(false);
       setUploadProgress(0);
@@ -260,6 +269,7 @@ const Drive: React.FC<DriveProps> = ({ onLogout }) => {
 
     if (isImage || isVideo) {
       setPreviewItem(item);
+      setPreviewError('');
       
       if (isImage && thumbnails[item.id]) {
         setPreviewUrl(thumbnails[item.id]);
@@ -272,7 +282,22 @@ const Drive: React.FC<DriveProps> = ({ onLogout }) => {
          try {
            let url = await downloadFile(item, () => {});
            if (url) {
-             setFullUrls(prev => ({ ...prev, [item.id]: url }));
+             if (item.name.toLowerCase().endsWith('.heic')) {
+                try {
+                   const res = await fetch(url);
+                   const blob = await res.blob();
+                   const convertedBlob = await heic2any({ blob, toType: 'image/jpeg', quality: 0.8 });
+                   const finalBlob = Array.isArray(convertedBlob) ? convertedBlob[0] : convertedBlob;
+                   const convertedUrl = URL.createObjectURL(finalBlob);
+                   setFullUrls(prev => ({ ...prev, [item.id]: convertedUrl }));
+                } catch(e) {
+                   console.error("HEIC convert error:", e);
+                   setPreviewError('Không thể chuyển đổi ảnh HEIC: ' + String((e as any).message || e));
+                   setFullUrls(prev => ({ ...prev, [item.id]: url }));
+                }
+             } else {
+                setFullUrls(prev => ({ ...prev, [item.id]: url }));
+             }
            }
          } catch (err) {
            console.error(err);
@@ -351,15 +376,31 @@ const Drive: React.FC<DriveProps> = ({ onLogout }) => {
     if (viewMode === 'large' || viewMode === 'extra_large' || viewMode === 'medium' || viewMode === 'details') {
       const itemsToFetch = currentTab === 'photos' ? allDisplayed.slice(0, photosVisibleCount) : allDisplayed;
       itemsToFetch.forEach(async (item) => {
-        const isNormalImage = item.mimeType?.startsWith('image/');
+        const isMedia = isImageItem(item) || isVideoItem(item);
 
-        if (!item.isFolder && isImageItem(item) && !thumbnails[item.id]) {
-           if (isNormalImage) {
-               const url = await downloadThumbnail(item);
-               if (url) {
-                 setThumbnails(prev => ({ ...prev, [item.id]: url }));
+        if (!item.isFolder && isMedia && !thumbnails[item.id]) {
+            let url = await downloadThumbnail(item);
+            
+            if (!url && item.name.toLowerCase().endsWith('.heic')) {
+                try {
+                   const fullUrl = await downloadFile(item, () => {});
+                   if (fullUrl) {
+                      const res = await fetch(fullUrl);
+                      const blob = await res.blob();
+                      const convertedBlob = await heic2any({ blob, toType: 'image/jpeg', quality: 0.2 });
+                      const finalBlob = Array.isArray(convertedBlob) ? convertedBlob[0] : convertedBlob;
+                      url = URL.createObjectURL(finalBlob);
+                      URL.revokeObjectURL(fullUrl);
+                   }
+                } catch(e) {
+                   console.error("HEIC thumb fail:", e);
+                }
+            }
+
+            if (url) {
+                 setThumbnails(prev => ({ ...prev, [item.id]: url as string }));
                  
-                 if (aiWorkerRef.current && (!item.tags || item.tags.length === 0)) {
+                 if (aiWorkerRef.current && (!item.tags || item.tags.length === 0) && isImageItem(item)) {
                     const img = new Image();
                     img.onload = async () => {
                        try {
@@ -369,8 +410,7 @@ const Drive: React.FC<DriveProps> = ({ onLogout }) => {
                     };
                     img.src = url;
                  }
-               }
-           }
+            }
         }
       });
     }
@@ -520,7 +560,7 @@ const Drive: React.FC<DriveProps> = ({ onLogout }) => {
                </div>
                <div style={{ flex: 3, display: 'flex', flexDirection: 'column', overflow: 'hidden', gap: '4px' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '12px', fontWeight: 500, overflow: 'hidden', width: '100%' }}>
-                     {item.isFolder ? <Folder size={24} color="var(--accent-primary)" style={{ flexShrink: 0 }} /> : getFileIcon(item.mimeType, 24)}
+                     {item.isFolder ? <Folder size={24} color="var(--accent-primary)" style={{ flexShrink: 0 }} /> : getFileIcon(item, 24)}
                      <span style={{ whiteSpace: 'nowrap', textOverflow: 'ellipsis', overflow: 'hidden', flex: 1, minWidth: 0, display: 'block' }} title={item.name}>{item.name}</span>
                   </div>
                   <div className="show-on-mobile" style={{ fontSize: '12px', color: 'var(--text-secondary)', gap: '8px', alignItems: 'center' }}>
@@ -571,7 +611,7 @@ const Drive: React.FC<DriveProps> = ({ onLogout }) => {
                <div onClick={e => { e.stopPropagation(); toggleSelect(item.id); }} style={{ display: 'flex' }}>
                   {isSelected ? <CheckSquare size={16} color="var(--accent-primary)" /> : <Square size={16} color="var(--text-secondary)" />}
                </div>
-               {item.isFolder ? <Folder size={20} color="var(--accent-primary)" style={{ flexShrink: 0 }} /> : getFileIcon(item.mimeType, 20)}
+               {item.isFolder ? <Folder size={20} color="var(--accent-primary)" style={{ flexShrink: 0 }} /> : getFileIcon(item, 20)}
                <div style={{ flex: 1, overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis', fontSize: '13px', fontWeight: 500 }} title={item.name}>
                   {item.name}
                </div>
@@ -617,11 +657,11 @@ const Drive: React.FC<DriveProps> = ({ onLogout }) => {
                      {!item.isFolder && isImageItem(item) && thumbnails[item.id] ? (
                         <img src={thumbnails[item.id]} alt="thumb" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                      ) : (
-                        item.isFolder ? <Folder size={viewMode === 'extra_large' ? 128 : 64} color="var(--accent-primary)" /> : getFileIcon(item.mimeType, viewMode === 'extra_large' ? 128 : 64)
+                        item.isFolder ? <Folder size={viewMode === 'extra_large' ? 128 : 64} color="var(--accent-primary)" /> : getFileIcon(item, viewMode === 'extra_large' ? 128 : 64)
                      )}
                   </div>
                   <div style={{ height: '60px', padding: '12px 16px', display: 'flex', alignItems: 'center', gap: '12px' }}>
-                     {item.isFolder ? <Folder size={20} color="var(--accent-primary)" style={{ flexShrink: 0 }} /> : getFileIcon(item.mimeType, 20)}
+                     {item.isFolder ? <Folder size={20} color="var(--accent-primary)" style={{ flexShrink: 0 }} /> : getFileIcon(item, 20)}
                      <div style={{ overflow: 'hidden', flex: 1 }}>
                        <div style={{ fontWeight: 600, fontSize: '13px', whiteSpace: 'nowrap', textOverflow: 'ellipsis', overflow: 'hidden' }} title={item.name}>{item.name}</div>
                      </div>
@@ -639,7 +679,7 @@ const Drive: React.FC<DriveProps> = ({ onLogout }) => {
                </>
             ) : (
                <div style={{ display: 'flex', alignItems: 'center', gap: '16px', paddingLeft: '16px', width: '100%' }}>
-                 {item.isFolder ? <Folder size={36} color="var(--accent-primary)" style={{ flexShrink: 0 }} /> : getFileIcon(item.mimeType, 36)}
+                 {item.isFolder ? <Folder size={36} color="var(--accent-primary)" style={{ flexShrink: 0 }} /> : getFileIcon(item, 36)}
                  <div style={{ overflow: 'hidden', flex: 1 }}>
                     <div style={{ fontWeight: 600, fontSize: '14px', whiteSpace: 'nowrap', textOverflow: 'ellipsis', overflow: 'hidden' }} title={item.name}>{item.name}</div>
                     {!item.isFolder ? (
@@ -1137,15 +1177,41 @@ const Drive: React.FC<DriveProps> = ({ onLogout }) => {
                     transformOrigin: 'center center',
                     transition: 'transform 0.2s ease-out',
                     cursor: zoom > 1 ? 'zoom-out' : 'zoom-in',
-                    filter: !fullUrls[previewItem.id] ? 'blur(4px)' : 'none'
+                    filter: !fullUrls[previewItem.id] ? 'blur(4px)' : 'none',
+                    display: previewError ? 'none' : 'block'
                  }} 
                  onDoubleClick={() => setZoom(z => z > 1 ? 1 : 2)}
                  onClick={() => setZoom(z => z > 1 ? 1 : 2)}
+                 onError={() => {
+                    if (fullUrls[previewItem.id]) {
+                       setPreviewError('Trình duyệt không hỗ trợ hiển thị ảnh này.');
+                    }
+                 }}
                />
             ) : isVideoItem(previewItem) ? (
-               <video src={fullUrls[previewItem.id] || previewUrl || ''} controls autoPlay style={{ maxWidth: '100%', maxHeight: '100%' }} />
+               <video 
+                 src={fullUrls[previewItem.id] || previewUrl || ''} 
+                 controls 
+                 autoPlay 
+                 style={{ maxWidth: '100%', maxHeight: '100%', display: previewError ? 'none' : 'block' }} 
+                 onError={() => {
+                    if (fullUrls[previewItem.id]) {
+                       setPreviewError('Trình duyệt không hỗ trợ định dạng video này (HEVC/H.265). Vui lòng tải xuống.');
+                    }
+                 }}
+               />
             ) : (
                <div style={{ color: 'white' }}>Không thể xem trước định dạng này. Vui lòng tải xuống.</div>
+            )}
+            
+            {previewError && (
+               <div style={{ color: '#ef4444', textAlign: 'center', background: 'rgba(0,0,0,0.5)', padding: '16px', borderRadius: '8px' }}>
+                  <AlertTriangle size={32} style={{ margin: '0 auto 12px' }} />
+                  <p>{previewError}</p>
+                  <button className="btn btn-primary" style={{ marginTop: '16px' }} onClick={() => handleDownload(previewItem)}>
+                    Tải file gốc xuống
+                  </button>
+               </div>
             )}
 
             {previewableItems.length > 1 && (

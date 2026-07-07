@@ -1,7 +1,5 @@
 import { Api } from 'telegram';
 import { getClient } from './telegram';
-import { CustomFile } from 'telegram/client/uploads';
-import { Buffer } from 'buffer';
 import { db } from './db';
 
 export interface DriveItem {
@@ -15,6 +13,9 @@ export interface DriveItem {
   tags?: string[];
   messageObj?: Api.Message;
 }
+
+// Cờ khóa mạng: Ngăn chặn các tiến trình background (tải thumbnail) chạy ngầm khi đang upload file nặng
+export let activeUploads = 0;
 
 let cachedStorageEntity: any = null;
 
@@ -118,31 +119,46 @@ export async function fetchDriveItems(): Promise<DriveItem[]> {
 }
 
 export async function uploadFile(file: File, parentPath: string, onProgress?: (p: number) => void): Promise<void> {
+  if (file.size === 0) {
+     throw new Error(`File "${file.name}" rỗng (0 byte), không thể tải lên.`);
+  }
+  
   const client = await getClient();
   const entity = await getStorageEntity();
   const caption = `#teledrive ${JSON.stringify({ path: parentPath, name: file.name })}`;
   
-  const arrayBuffer = await file.arrayBuffer();
-  const buffer = Buffer.from(arrayBuffer);
-  const customFile = new CustomFile(file.name, file.size, "", buffer);
+  // THỦ THUẬT (HACK) VƯỢT QUA BUG CỦA GRAMJS:
+  // Thư viện gramjs bị lỗi quên kiểm tra DOM File, khiến nó nhầm tưởng File là một TL Object và báo lỗi "Cannot use [object File]".
+  // Bằng cách gán thêm hàm `read`, ta đánh lừa gramjs lọt qua vòng kiểm tra lỗi đó để nó xử lý File như bình thường.
+  const fileToUpload = file as any;
+  fileToUpload.read = () => {}; 
 
-  const result: any = await client.sendFile(entity, {
-    file: customFile,
-    caption: caption,
-    forceDocument: true,
-    progressCallback: (progress: any, total?: any) => {
-      let p = 0;
-      if (total && total.toJSNumber) p = progress.toJSNumber() / total.toJSNumber();
-      else p = Number(progress);
-      if (onProgress) onProgress(p * 100);
+  console.log(`[Upload] Bắt đầu dùng tiến trình chuẩn của gramjs cho file: ${file.name} (${file.size} bytes)`);
+
+  activeUploads++; // Khóa mạng
+  try {
+    const result: any = await client.sendFile(entity, {
+      file: fileToUpload,
+      caption: caption,
+      attributes: [new Api.DocumentAttributeFilename({ fileName: file.name })],
+      forceDocument: true,
+      workers: 1, // Dùng 1 luồng để tránh nghẽn WebSocket
+      progressCallback: (progress: any, total?: any) => {
+        let p = 0;
+        if (total && total.toJSNumber) p = progress.toJSNumber() / total.toJSNumber();
+        else p = Number(progress);
+        if (onProgress) onProgress(p * 100);
+      }
+    });
+
+    if (result && result.id) {
+       await db.files.put({
+          id: result.id, name: file.name, isFolder: false, path: parentPath,
+          size: file.size, date: result.date, mimeType: file.type || 'application/octet-stream'
+       });
     }
-  });
-
-  if (result && result.id) {
-     await db.files.put({
-        id: result.id, name: file.name, isFolder: false, path: parentPath,
-        size: file.size, date: result.date, mimeType: file.type || 'application/octet-stream'
-     });
+  } finally {
+    activeUploads--; // Mở khóa mạng
   }
 }
 
@@ -210,25 +226,45 @@ export async function downloadFile(item: DriveItem, onProgress?: (p: number) => 
   const client = await getClient();
   
   const buffer = await client.downloadMedia(msgObj, {
+    workers: 4, // Tăng tốc độ tải bằng cách mở 4 luồng tải song song thay vì 1 luồng
     progressCallback: (progress: any, total?: any) => {
       let p = 0;
       if (total && total.toJSNumber) p = progress.toJSNumber() / total.toJSNumber();
       else p = Number(progress);
       if (onProgress) onProgress(p * 100);
     }
-  });
+  } as any);
 
   if (buffer) {
-    const blob = new Blob([buffer as any], { type: item.mimeType || 'application/octet-stream' });
+    let mime = item.mimeType || 'application/octet-stream';
+    if (!item.mimeType || mime === 'application/octet-stream') {
+       const ext = item.name.split('.').pop()?.toLowerCase();
+       if (ext === 'heic') mime = 'image/heic';
+       else if (ext === 'mov') mime = 'video/mp4'; // Hack cho Chrome nhận diện và thử phát H.264
+       else if (ext === 'mp4') mime = 'video/mp4';
+       else if (ext === 'jpg' || ext === 'jpeg') mime = 'image/jpeg';
+       else if (ext === 'png') mime = 'image/png';
+    }
+    const blob = new Blob([buffer as any], { type: mime });
     return URL.createObjectURL(blob);
   }
   return null;
 }
 
 export async function downloadThumbnail(item: DriveItem): Promise<string | null> {
-  if (!item.mimeType?.startsWith('image/')) return null;
+  // Tránh xung đột mạng: Không tải thumbnail khi đang có upload lớn để khỏi làm rớt WebSocket
+  if (activeUploads > 0) {
+      console.log(`[Thumbnail] Tạm ngưng tải ảnh thumbnail cho ${item.name} vì đang bận Upload file nặng.`);
+      return null;
+  }
+
   const msgObj = await ensureMessageObj(item);
   if (!msgObj) return null;
+  
+  const media = msgObj.media as any;
+  const hasThumb = media?.document?.thumbs?.length > 0 || media?.photo?.sizes?.length > 0;
+  if (!hasThumb) return null;
+
   const client = await getClient();
   try {
     const buffer = await client.downloadMedia(msgObj, { thumb: 1 });
