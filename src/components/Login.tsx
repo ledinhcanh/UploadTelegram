@@ -79,7 +79,7 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
   };
 
   return (
-    <div className="login-wrapper" style={{ minHeight: '100vh', padding: '20px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+    <div className="login-wrapper" style={{ minHeight: '100vh', width: '100%', padding: '20px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
       <div className="card animate-fade-in" style={{ maxWidth: '400px', width: '100%', textAlign: 'center' }}>
         <div style={{ marginBottom: '32px' }}>
           <h1 style={{ fontSize: '28px', marginBottom: '8px', color: 'var(--accent-primary)', fontWeight: 700 }}>TeleDrive</h1>
@@ -152,7 +152,7 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
           </div>
         )}
 
-        <div style={{ marginTop: '24px', display: 'flex', justifyContent: 'center', gap: '12px' }}>
+        <div className="login-buttons" style={{ marginTop: '24px', display: 'flex', justifyContent: 'center', gap: '12px' }}>
           <button 
             className={`btn ${loginMethod === 'qr' ? 'btn-primary' : 'btn-outline'}`}
             onClick={() => setLoginMethod('qr')}

@@ -378,6 +378,23 @@ p {
     display: block;
   }
   
+  /* Login adjustments for mobile */
+  .login-wrapper {
+    padding: 12px !important;
+  }
+  
+  .card {
+    padding: 20px !important;
+  }
+  
+  .login-buttons {
+    flex-direction: column !important;
+  }
+  
+  .login-buttons button {
+    width: 100% !important;
+  }
+
   /* Details view adjustments for mobile */
   .details-header {
     display: none !important;
