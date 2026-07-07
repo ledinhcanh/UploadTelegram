@@ -285,3 +285,89 @@ export async function downloadThumbnail(item: DriveItem): Promise<string | null>
   }
   return null;
 }
+
+let isStreamListenerActive = false;
+
+export function startStreamListener() {
+  if (isStreamListenerActive) return;
+  if (!navigator.serviceWorker) return;
+  
+  isStreamListenerActive = true;
+  navigator.serviceWorker.addEventListener('message', async (event) => {
+    if (event.data && event.data.type === 'REQUEST_CHUNK') {
+      const { reqId, fileIdStr, rangeHeader } = event.data;
+      
+      try {
+        const fileId = parseInt(fileIdStr, 10);
+        const item = await db.files.get(fileId);
+        if (!item) throw new Error("File not found in local db");
+        
+        const msgObj = await ensureMessageObj(item);
+        if (!msgObj || !msgObj.document) throw new Error("Document not found from Telegram");
+        
+        const doc = msgObj.document as any;
+        const totalSize = Number(doc.size);
+        
+        const [startStr] = rangeHeader.replace(/bytes=/, "").split("-");
+        const requestedStart = parseInt(startStr, 10) || 0;
+        
+        const CHUNK_SIZE = 512 * 1024; // 512KB limit from Telegram
+        const alignedOffset = Math.floor(requestedStart / 4096) * 4096;
+        const skipBytes = requestedStart - alignedOffset;
+        
+        let limit = CHUNK_SIZE;
+        limit = Math.ceil(limit / 4096) * 4096;
+
+        const client = await getClient();
+        const location = new Api.InputDocumentFileLocation({
+            id: doc.id,
+            accessHash: doc.accessHash,
+            fileReference: doc.fileReference,
+            thumbSize: ''
+        });
+
+        // Use any to bypass gramjs bigInt typing issues in different versions
+        const result: any = await client.invoke(new Api.upload.GetFile({
+            location,
+            offset: alignedOffset as any,
+            limit: limit
+        }));
+
+        const bytes = result.bytes;
+        let exactChunk: Uint8Array | Buffer;
+        
+        if (bytes.subarray) {
+           exactChunk = bytes.subarray(skipBytes, skipBytes + CHUNK_SIZE);
+        } else if (bytes.slice) {
+           exactChunk = bytes.slice(skipBytes, skipBytes + CHUNK_SIZE);
+        } else {
+           exactChunk = Buffer.from(bytes).subarray(skipBytes, skipBytes + CHUNK_SIZE);
+        }
+        
+        let mime = item.mimeType || 'video/mp4';
+        const ext = item.name.split('.').pop()?.toLowerCase();
+        if (ext === 'mov' || ext === 'mp4') mime = 'video/mp4';
+        
+        if (event.source) {
+           event.source.postMessage({
+              type: 'CHUNK_RESPONSE',
+              reqId,
+              chunk: exactChunk,
+              totalSize,
+              mimeType: mime
+           });
+        }
+        
+      } catch (e: any) {
+         console.error("Stream error:", e);
+         if (event.source) {
+            event.source.postMessage({
+               type: 'CHUNK_RESPONSE',
+               reqId,
+               error: e.message
+            });
+         }
+      }
+    }
+  });
+}

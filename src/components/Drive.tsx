@@ -3,7 +3,7 @@ import { Folder, File, Upload, FolderPlus, Download, Trash2, Home, ChevronRight,
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
 import heic2any from 'heic2any';
-import { fetchDriveItems, uploadFile, createFolder, deleteItem, downloadFile, downloadThumbnail, moveItemRecursive } from '../lib/vfs';
+import { fetchDriveItems, uploadFile, createFolder, deleteItem, downloadFile, downloadThumbnail, moveItemRecursive, startStreamListener } from '../lib/vfs';
 import type { DriveItem } from '../lib/vfs';
 const formatBytes = (bytes: number, decimals = 2) => {
     if (!+bytes) return '0 Bytes';
@@ -124,6 +124,7 @@ const Drive: React.FC<DriveProps> = ({ onLogout }) => {
 
   useEffect(() => {
     loadItems();
+    startStreamListener();
     const handleClick = () => { setActiveMenu(null); setShowViewMenu(false); };
     window.addEventListener('click', handleClick);
     return () => window.removeEventListener('click', handleClick);
@@ -278,31 +279,35 @@ const Drive: React.FC<DriveProps> = ({ onLogout }) => {
       }
 
       if (!fullUrls[item.id]) {
-         setLoading(true);
-         try {
-           let url = await downloadFile(item, () => {});
-           if (url) {
-             if (item.name.toLowerCase().endsWith('.heic')) {
-                try {
-                   const res = await fetch(url);
-                   const blob = await res.blob();
-                   const convertedBlob = await heic2any({ blob, toType: 'image/jpeg', quality: 0.8 });
-                   const finalBlob = Array.isArray(convertedBlob) ? convertedBlob[0] : convertedBlob;
-                   const convertedUrl = URL.createObjectURL(finalBlob);
-                   setFullUrls(prev => ({ ...prev, [item.id]: convertedUrl }));
-                } catch(e) {
-                   console.error("HEIC convert error:", e);
-                   setPreviewError('Không thể chuyển đổi ảnh HEIC: ' + String((e as any).message || e));
+         if (isVideo) {
+            setFullUrls(prev => ({ ...prev, [item.id]: `/tg-stream/${item.id}` }));
+         } else {
+            setLoading(true);
+            try {
+              let url = await downloadFile(item, () => {});
+              if (url) {
+                if (item.name.toLowerCase().endsWith('.heic')) {
+                   try {
+                      const res = await fetch(url);
+                      const blob = await res.blob();
+                      const convertedBlob = await heic2any({ blob, toType: 'image/jpeg', quality: 0.8 });
+                      const finalBlob = Array.isArray(convertedBlob) ? convertedBlob[0] : convertedBlob;
+                      const convertedUrl = URL.createObjectURL(finalBlob);
+                      setFullUrls(prev => ({ ...prev, [item.id]: convertedUrl }));
+                   } catch(e) {
+                      console.error("HEIC convert error:", e);
+                      setPreviewError('Không thể chuyển đổi ảnh HEIC: ' + String((e as any).message || e));
+                      setFullUrls(prev => ({ ...prev, [item.id]: url }));
+                   }
+                } else {
                    setFullUrls(prev => ({ ...prev, [item.id]: url }));
                 }
-             } else {
-                setFullUrls(prev => ({ ...prev, [item.id]: url }));
-             }
-           }
-         } catch (err) {
-           console.error(err);
-         } finally {
-           setLoading(false);
+              }
+            } catch (err) {
+              console.error(err);
+            } finally {
+              setLoading(false);
+            }
          }
       }
     } else {
@@ -936,7 +941,7 @@ const Drive: React.FC<DriveProps> = ({ onLogout }) => {
           <div className="header-actions">
              {currentTab === 'photos' && items.filter(i => !i.isFolder && (isImageItem(i) || isVideoItem(i))).length > 0 && (
                 <button 
-                  className="btn btn-primary" 
+                  className="btn btn-primary hide-on-mobile" 
                   style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 12px', border: 'none', background: 'var(--accent-primary)', color: 'white' }}
                   onClick={handleDownloadAllPhotos}
                   disabled={downloadingAll}
@@ -1167,6 +1172,7 @@ const Drive: React.FC<DriveProps> = ({ onLogout }) => {
 
             {isImageItem(previewItem) ? (
                <img 
+                 key={`img-${previewItem.id}`}
                  src={fullUrls[previewItem.id] || previewUrl || ''} 
                  alt={previewItem.name} 
                  style={{ 
@@ -1190,6 +1196,7 @@ const Drive: React.FC<DriveProps> = ({ onLogout }) => {
                />
             ) : isVideoItem(previewItem) ? (
                <video 
+                 key={`vid-${previewItem.id}`}
                  src={fullUrls[previewItem.id] || previewUrl || ''} 
                  controls 
                  autoPlay 
