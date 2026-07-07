@@ -79,7 +79,7 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
   };
 
   return (
-    <div className="login-wrapper flex-center" style={{ minHeight: '100vh', padding: '20px' }}>
+    <div className="login-wrapper" style={{ minHeight: '100vh', padding: '20px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
       <div className="card animate-fade-in" style={{ maxWidth: '400px', width: '100%', textAlign: 'center' }}>
         <div style={{ marginBottom: '32px' }}>
           <h1 style={{ fontSize: '28px', marginBottom: '8px', color: 'var(--accent-primary)', fontWeight: 700 }}>TeleDrive</h1>
@@ -91,8 +91,8 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
         {loginMethod === 'qr' ? (
           <div className="qr-container" style={{ marginBottom: '24px' }}>
             <div 
-              className="flex-center" 
               style={{ 
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
                 width: '200px', 
                 height: '200px', 
                 margin: '0 auto', 
